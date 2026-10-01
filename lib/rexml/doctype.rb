@@ -5,6 +5,7 @@ require_relative "namespace"
 require_relative 'entity'
 require_relative 'attlistdecl'
 require_relative 'xmltokens'
+require_relative 'dtd/content_model'
 
 module REXML
   class ReferenceWriter
@@ -260,6 +261,21 @@ module REXML
   class ElementDecl < Declaration
     def initialize( src )
       super
+    end
+
+    # The name of the declared element.
+    def name
+      @string[/\A\s*<!ELEMENT\s+(\S+)/, 1]
+    end
+
+    # Parses the content specification of this declaration into a
+    # REXML::DTD::ContentModel, which can validate sequences of child
+    # element names.  Raises DTD::ContentModel::AmbiguityError when the
+    # content model is not deterministic.
+    def content_model
+      spec = @string[/\A\s*<!ELEMENT\s+\S+\s*(.*?)\s*\z/m, 1]
+      spec = spec.sub(/>\s*\z/, "") if spec
+      REXML::DTD::ContentModel.parse(spec)
     end
   end
 
