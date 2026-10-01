@@ -66,6 +66,14 @@ module REXMLTests
                      abbreviate("string-length(a/b[last()])"))
       end
 
+      def test_prefixed_function
+        parser = REXML::Parsers::XPathParser.new
+        assert_equal([:function, "ext:score", [[:self, :node]]],
+                     parser.parse("ext:score(.)"))
+        assert_equal("ext:score(.)",
+                     abbreviate("ext:score(.)"))
+      end
+
       def test_descendant_or_self_only
         assert_equal("//",
                      abbreviate("/descendant-or-self::node()/"))

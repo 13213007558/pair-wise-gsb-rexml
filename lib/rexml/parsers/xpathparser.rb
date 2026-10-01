@@ -650,7 +650,7 @@ module REXML
           parsed << :variable
           parsed << varname
           #arry << @variables[ varname ]
-        when /^(\w[-\w]*)(?:\()/
+        when /^((?:#{NCNAME_STR}:)?#{NCNAME_STR})(?:\()/
           fname = $1
           tmp = $'
           return path if fname =~ NT

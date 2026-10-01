@@ -58,12 +58,19 @@ module REXML
 
     DEBUG = (ENV["REXML_XPATH_PARSER_DEBUG"] == "true")
 
-    def initialize(strict: false)
+    class UnknownFunctionError < ArgumentError
+    end
+
+    class FunctionArityError < ArgumentError
+    end
+
+    def initialize(strict: false, functions: nil)
       @debug = DEBUG
       @parser = REXML::Parsers::XPathParser.new
       @namespaces = nil
       @variables = {}
       @functions = FunctionsClass.new
+      @extension_functions = normalize_extension_functions(functions)
       @attlist_mappings = nil
       @document = nil
       @element_namespaces_cache = {}
@@ -78,6 +85,12 @@ module REXML
 
     def variables=(vars)
       @variables = vars.transform_values { |v| coerce_variable(v) }
+    end
+
+    class << self
+      def extension_function_stack
+        Thread.current[:rexml_xpath_extension_functions] ||= []
+      end
     end
 
     def parse path, node
@@ -149,6 +162,7 @@ module REXML
 
 
     def match(path_stack, node)
+      self.class.extension_function_stack.push(@extension_functions)
       @document = node.document
       # A fresh cache per evaluation, so that a document modified between two
       # evaluations is not ordered by stale indexes.
@@ -169,11 +183,109 @@ module REXML
       # outlive the evaluation.
       @node_indexes = nil
       @functions.node_indexes = nil
+      self.class.extension_function_stack.pop
     end
 
     private
     def strict?
       @strict
+    end
+
+    def normalize_extension_functions(functions)
+      return {}.freeze if functions.nil?
+
+      unless functions.is_a?(Hash) &&
+             functions.all? { |uri, locals| uri.is_a?(String) && locals.is_a?(Hash) }
+        raise TypeError, "XPath functions must be a Hash keyed by namespace URI"
+      end
+
+      functions.each_with_object({}) do |(uri, locals), normalized|
+        invalid_local = locals.find do |name, callback|
+          !name.is_a?(String) || !callback.respond_to?(:call)
+        end
+        if invalid_local
+          name = invalid_local[0]
+          raise TypeError, "XPath function #{uri.inspect}:#{name.inspect} must be callable"
+        end
+        normalized[uri] = locals.dup.freeze
+      end.freeze
+    end
+
+    def extension_function(name, node)
+      prefix, local_name = name.split(":", 2)
+      namespace_uri =
+        if prefix.nil?
+          ""
+        else
+          get_xpath_namespace(node, prefix)
+        end
+      callback = active_extension_function(namespace_uri, local_name)
+      [namespace_uri, local_name, callback]
+    end
+
+    def active_extension_function(namespace_uri, local_name)
+      self.class.extension_function_stack.each do |functions|
+        callback = functions.dig(namespace_uri, local_name)
+        return callback if callback
+      end
+      nil
+    end
+
+    def call_extension_function(callback, arguments)
+      validate_extension_function_arity(callback, arguments)
+      result = callback.call(*arguments)
+      coerce_extension_function_result(result)
+    end
+
+    def validate_extension_function_arity(callback, arguments)
+      if callback.is_a?(Proc) && !callback.lambda?
+        arity = callback.arity
+        if arity >= 0
+          valid = arguments.size == arity
+          range = arity
+        else
+          minimum_arguments = -arity - 1
+          valid = arguments.size >= minimum_arguments
+          range = "#{minimum_arguments}.."
+        end
+        unless valid
+          raise FunctionArityError,
+                "wrong number of XPath function arguments " \
+                "(given #{arguments.size}, expected #{range})"
+        end
+        return
+      end
+
+      parameters = callback.parameters
+      required_parameters = parameters.count { |type, _name| type == :req }
+      optional_parameters = parameters.count { |type, _name| type == :opt }
+      unless parameters.any? { |type, _name| type == :rest } ||
+             (required_parameters..(required_parameters + optional_parameters))
+               .cover?(arguments.size)
+        range = required_parameters
+        range = "#{range}..#{required_parameters + optional_parameters}" if optional_parameters > 0
+        raise FunctionArityError,
+              "wrong number of XPath function arguments " \
+              "(given #{arguments.size}, expected #{range})"
+      end
+    end
+
+    def coerce_extension_function_result(result)
+      case result
+      when true, false, Numeric, String
+        result
+      when nil
+        ""
+      when REXML::Node
+        [result]
+      when Array
+        unless result.all? { |value| value.is_a?(REXML::Node) }
+          raise TypeError, "XPath function must return a node-set, boolean, number, or string"
+        end
+        result
+      else
+        @functions.string(result)
+      end
     end
 
     # Returns a String namespace for a prefix used in xpath
@@ -347,16 +459,37 @@ module REXML
             target_context[:node]  = node
             target_context[:position] = 1
           end
+          @functions.context = target_context
+
+          if func_name.include?(":")
+            namespace_uri, local_name, callback = extension_function(func_name, node)
+            unless callback
+              raise UnknownFunctionError,
+                    "Unknown XPath function: {#{namespace_uri}}#{local_name}"
+            end
+          else
+            local_name = func_name
+            builtin_function_name = func_name.tr('_', '-')
+            callback =
+              unless FunctionsClass::AVAILABLE_FUNCTIONS.include?(builtin_function_name)
+                active_extension_function("", local_name)
+              end
+          end
+
           args = arguments.dclone.collect do |arg|
             expr(arg, nodeset, target_context)
           end
-          @functions.context = target_context
 
-          # TODO: Maybe, this is not XPath spec behavior.
-          # This behavior must be reconsidered.
-          result = @functions.call(func_name.tr('_', '-'), args: args, fallback: [])
+          result =
+            if callback
+              call_extension_function(callback, args)
+            else
+              # TODO: Maybe, this is not XPath spec behavior.
+              # This behavior must be reconsidered.
+              @functions.call(builtin_function_name, args: args, fallback: [])
+            end
 
-          return result if path_stack.empty?
+          return result if path_stack.empty? || result.is_a?(Array)
 
           nodeset = apply_remaining_predicates(path_stack, result)
         when :group
@@ -428,8 +561,14 @@ module REXML
         # It's possible to optimize this by checking the actual value of the variable.
         true
       when :function
-        # functions that return number is position dependent. eg. `[position() = string-length(@attr)]`
-        %w[number ceiling round floor string-length sum count].include?(predicate_expr[1])
+        function_name = predicate_expr[1].to_s.tr('_', '-')
+        prefixed_function = function_name.include?(":")
+        builtin_number_function =
+          %w[number ceiling round floor string-length sum count].include?(function_name)
+        # Unknown and extension functions may return a number.
+        prefixed_function ||
+          !FunctionsClass::AVAILABLE_FUNCTIONS.include?(function_name) ||
+          builtin_number_function
       when :group
         position_dependent?(predicate_expr[1])
       when :descendant, :descendant_or_self, :ancestor, :ancestor_or_self,

@@ -5,6 +5,9 @@ require_relative 'xpath_parser'
 module REXML
   # Wrapper class.  Use this class to access the XPath functions.
   class XPath
+    UnknownFunctionError = XPathParser::UnknownFunctionError
+    FunctionArityError = XPathParser::FunctionArityError
+
     # A base Hash object, supposing to be used when initializing a
     # default empty namespaces set, but is currently unused.
     # TODO: either set the namespaces=EMPTY_HASH, or deprecate this.
@@ -22,6 +25,9 @@ module REXML
     #   If supplied, a Hash which maps $variables in the query
     #   to values. This can be used to avoid XPath injection attacks
     #   or to automatically handle escaping string values.
+    # functions::
+    #   If supplied, a Hash of extension callables keyed by namespace URI
+    #   and then function local name. It is used only for this evaluation.
     #
     #  XPath.first( node )
     #  XPath.first( doc, "//b"} )
@@ -45,6 +51,9 @@ module REXML
     #   If supplied, a Hash which maps $variables in the query
     #   to values. This can be used to avoid XPath injection attacks
     #   or to automatically handle escaping string values.
+    # functions::
+    #   If supplied, a Hash of extension callables keyed by namespace URI
+    #   and then function local name. It is used only for this evaluation.
     #
     #  XPath.each( node ) { |el| ... }
     #  XPath.each( node, '/*[@attr='v']' ) { |el| ... }
