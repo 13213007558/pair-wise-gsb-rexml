@@ -5,6 +5,7 @@ require_relative "attribute"
 require_relative "cdata"
 require_relative "xpath"
 require_relative "parseexception"
+require_relative "rexml"
 
 module REXML
   # An \REXML::Element object represents an XML element.
@@ -1518,6 +1519,32 @@ module REXML
         end
       formatter.write( self, output )
     end
+
+    # Canonicalizes this element and its descendants, and returns UTF-8
+    # bytes. The optional node set selects an XPath/XInclude node subset.
+    #
+    #   element.canonicalize(REXML::C14n::XML_C14N_EXCLUSIVE_1_0,
+    #                        false,
+    #                        ["prefix"],
+    #                        selected_nodes)
+    def canonicalize(mode = C14n::XML_C14N_1_1,
+                     with_comments = false,
+                     inclusive_prefixes = nil,
+                     node_set = nil,
+                     &block)
+      if [Array, String, Symbol].any? { |klass| with_comments.is_a?(klass) }
+        node_set = inclusive_prefixes
+        inclusive_prefixes = with_comments
+        with_comments = false
+      end
+      C14n.canonicalize(self,
+                        mode,
+                        with_comments,
+                        inclusive_prefixes,
+                        node_set,
+                        &block)
+    end
+    alias c14n canonicalize
 
     # Returns namespace of the element
     def _namespace_internal(namespaces = _calculate_namespaces) # :nodoc:

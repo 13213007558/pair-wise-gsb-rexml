@@ -399,6 +399,29 @@ module REXML
       formatter.write( self, output )
     end
 
+    # :call-seq:
+    #   canonicalize(mode = REXML::C14n::XML_C14N_1_1, with_comments = false, inclusive_prefixes = nil, node_set = nil) -> string
+    #
+    # Canonicalizes the document and returns UTF-8 bytes.
+    def canonicalize(mode = C14n::XML_C14N_1_1,
+                     with_comments = false,
+                     inclusive_prefixes = nil,
+                     node_set = nil,
+                     &block)
+      if [Array, String, Symbol].any? { |klass| with_comments.is_a?(klass) }
+        node_set = inclusive_prefixes
+        inclusive_prefixes = with_comments
+        with_comments = false
+      end
+      C14n.canonicalize(self,
+                        mode,
+                        with_comments,
+                        inclusive_prefixes,
+                        node_set,
+                        &block)
+    end
+    alias c14n canonicalize
+
 
     def Document::parse_stream( source, listener )
       Parsers::StreamParser.new( source, listener ).parse
