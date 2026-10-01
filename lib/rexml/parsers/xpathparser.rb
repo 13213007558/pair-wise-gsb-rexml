@@ -642,6 +642,8 @@ module REXML
       VARIABLE_REFERENCE  = /^\$(#{NAME_STR})/u
       NUMBER              = /^(\d*\.?\d+)/
       NT        = /^comment|text|processing-instruction|node$/
+      PREFIXED_FUNCTION_NAME = /^(#{NCNAME_STR}):(#{NCNAME_STR})(?:\()/u
+      FUNCTION_NAME = /^(\w[-\w]*)(?:\()/u
       def PrimaryExpr path, parsed
         case path
         when VARIABLE_REFERENCE
@@ -650,7 +652,15 @@ module REXML
           parsed << :variable
           parsed << varname
           #arry << @variables[ varname ]
-        when /^(\w[-\w]*)(?:\()/
+        when PREFIXED_FUNCTION_NAME
+          prefix = $1
+          fname = $2
+          tmp = $'
+          path = tmp
+          parsed << :function
+          parsed << "#{prefix}:#{fname}"
+          path = FunctionCall(path, parsed)
+        when FUNCTION_NAME
           fname = $1
           tmp = $'
           return path if fname =~ NT

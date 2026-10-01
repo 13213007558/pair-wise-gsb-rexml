@@ -58,12 +58,13 @@ module REXML
 
     DEBUG = (ENV["REXML_XPATH_PARSER_DEBUG"] == "true")
 
-    def initialize(strict: false)
+    def initialize(strict: false, functions: nil)
       @debug = DEBUG
       @parser = REXML::Parsers::XPathParser.new
       @namespaces = nil
       @variables = {}
-      @functions = FunctionsClass.new
+      @builtin_functions = FunctionsClass.new
+      @extension_functions = normalize_functions(functions)
       @attlist_mappings = nil
       @document = nil
       @element_namespaces_cache = {}
@@ -78,6 +79,10 @@ module REXML
 
     def variables=(vars)
       @variables = vars.transform_values { |v| coerce_variable(v) }
+    end
+
+    def functions=(functions)
+      @extension_functions = normalize_functions(functions)
     end
 
     def parse path, node
@@ -153,7 +158,7 @@ module REXML
       # A fresh cache per evaluation, so that a document modified between two
       # evaluations is not ordered by stale indexes.
       @node_indexes = {}.compare_by_identity
-      @functions.node_indexes = @node_indexes
+      @builtin_functions.node_indexes = @node_indexes
       nodeset = [node]
       result = expr(path_stack, nodeset)
       case result
@@ -168,12 +173,143 @@ module REXML
       # stays reachable through @document and @element_namespaces_cache, which
       # outlive the evaluation.
       @node_indexes = nil
-      @functions.node_indexes = nil
+      @builtin_functions.node_indexes = nil
     end
 
     private
     def strict?
       @strict
+    end
+
+    def normalize_functions(functions)
+      return {} if functions.nil?
+      unless functions.is_a?(Hash)
+        raise ArgumentError, "The functions argument, if supplied, must be a hash object."
+      end
+
+      functions.each_with_object({}) do |(key, value), normalized|
+        if key.is_a?(Array)
+          unless key.length == 2 && key[0].is_a?(String) && key[1].is_a?(String)
+            raise ArgumentError, "Function key must be [namespace_uri, local_name]: <#{key.inspect}>"
+          end
+          unless value.respond_to?(:call)
+            raise TypeError, "Function must respond to call: <#{value.inspect}>"
+          end
+          normalized[[key[0], key[1]]] = value
+        elsif key.is_a?(String)
+          unless value.is_a?(Hash)
+            raise TypeError, "Functions for namespace #{key.inspect} must be a hash"
+          end
+          value.each do |local_name, function|
+            unless local_name.is_a?(String)
+              raise TypeError, "Function local name must be a string: <#{local_name.inspect}>"
+            end
+            unless function.respond_to?(:call)
+              raise TypeError, "Function must respond to call: <#{function.inspect}>"
+            end
+            normalized[[key, local_name]] = function
+          end
+        else
+          raise ArgumentError, "Function key must be a namespace URI string or [namespace_uri, local_name]: <#{key.inspect}>"
+        end
+      end
+    end
+
+    def call_function(function_name, node, args)
+      prefix, local_name = split_function_name(function_name)
+      if (prefix.nil? || prefix.empty?) && FunctionsClass::AVAILABLE_FUNCTIONS.include?(local_name)
+        method_name = local_name.tr('-', '_')
+        validate_function_arity(@builtin_functions.method(method_name), args.length, function_name)
+        return @builtin_functions.public_send(method_name, *args)
+      end
+
+      namespace_uri = function_namespace(prefix, node)
+      function_key = [namespace_uri, local_name]
+      active_functions = XPath.extension_functions
+      function = active_functions&.[](function_key) || @extension_functions[function_key]
+      if function.nil?
+        return [] if prefix.nil?
+        name = prefix.empty? ? local_name : "#{prefix}:#{local_name}"
+        raise XPath::UndefinedFunction, "Unknown XPath function: #{name}"
+      end
+
+      validate_function_arity(function, args.length, function_name)
+      result =
+        if active_functions
+          function.call(*args)
+        else
+          XPath.with_extension_functions(@extension_functions) do
+            function.call(*args)
+          end
+        end
+      coerce_extension_function_result(result)
+    end
+
+    def split_function_name(function_name)
+      prefix, local_name = function_name.split(":", 2)
+      if local_name.nil?
+        [nil, prefix.tr('_', '-')]
+      else
+        [prefix, local_name]
+      end
+    end
+
+    def function_namespace(prefix, node)
+      return "" if prefix.nil?
+      if @namespaces
+        namespace_uri = @namespaces[prefix]
+      elsif node.node_type == :element
+        namespace_uri = element_namespace_lookup(node, prefix)
+      elsif node.respond_to?(:root)
+        namespace_uri = element_namespace_lookup(node.root, prefix)
+      end
+      if namespace_uri.nil?
+        raise UndefinedNamespaceException.new(prefix, nil, nil)
+      end
+      namespace_uri
+    end
+
+    def validate_function_arity(function, argument_count, function_name)
+      parameters =
+        if function.is_a?(Method)
+          function.parameters
+        elsif function.is_a?(Proc)
+          function.parameters
+        elsif function.respond_to?(:method)
+          function.method(:call).parameters
+        elsif function.respond_to?(:parameters)
+          function.parameters
+        else
+          return
+        end
+
+      positional = parameters.take_while { |type, _name| type == :req || type == :opt }
+      required = positional.count { |type, _name| type == :req }
+      optional = positional.count { |type, _name| type == :opt }
+      splat = parameters.any? { |type, _name| type == :rest }
+      keyword_required = parameters.any? { |type, _name| type == :keyreq }
+
+      valid = !keyword_required && argument_count >= required && (splat || argument_count <= required + optional)
+      unless valid
+        raise XPath::WrongNumberOfArguments,
+              "Wrong number of arguments for XPath function #{function_name}: expected #{required}..#{splat ? '*' : required + optional}, got #{argument_count}"
+      end
+    end
+
+    def coerce_extension_function_result(result)
+      case result
+      when Node
+        [result]
+      when Array
+        unless result.all? { |item| item.is_a?(Node) }
+          raise TypeError, "Extension function node-set must contain only REXML::Node objects"
+        end
+        result
+      when String, Numeric, true, false
+        result
+      else
+        raise TypeError, "Unsupported extension function result type: #{result.class}"
+      end
     end
 
     # Returns a String namespace for a prefix used in xpath
@@ -291,21 +427,21 @@ module REXML
 
         when :or
           left = expr(path_stack.shift, nodeset.dup, context)
-          return true if @functions.boolean(left)
+          return true if @builtin_functions.boolean(left)
           right = expr(path_stack.shift, nodeset.dup, context)
-          return @functions.boolean(right)
+          return @builtin_functions.boolean(right)
 
         when :and
           left = expr(path_stack.shift, nodeset.dup, context)
-          return false unless @functions.boolean(left)
+          return false unless @builtin_functions.boolean(left)
           right = expr(path_stack.shift, nodeset.dup, context)
-          return @functions.boolean(right)
+          return @builtin_functions.boolean(right)
 
         when :div, :mod, :mult, :plus, :minus
           left = expr(path_stack.shift, nodeset, context)
           right = expr(path_stack.shift, nodeset, context)
-          left = @functions.number(left)
-          right = @functions.number(right)
+          left = @builtin_functions.number(left)
+          right = @builtin_functions.number(right)
           case op
           when :div
             return left / right
@@ -326,7 +462,7 @@ module REXML
           return (left | right)
         when :neg
           res = expr( path_stack, nodeset, context )
-          return -@functions.number(res)
+          return -@builtin_functions.number(res)
         when :not
         when :function
           func_name = path_stack.shift
@@ -350,11 +486,11 @@ module REXML
           args = arguments.dclone.collect do |arg|
             expr(arg, nodeset, target_context)
           end
-          @functions.context = target_context
+          @builtin_functions.context = target_context
 
           # TODO: Maybe, this is not XPath spec behavior.
           # This behavior must be reconsidered.
-          result = @functions.call(func_name.tr('_', '-'), args: args, fallback: [])
+          result = call_function(func_name, node, args)
 
           return result if path_stack.empty?
 
@@ -1133,11 +1269,11 @@ module REXML
       when true, false
         b
       when 'true', 'false'
-        @functions.boolean( b )
+        @builtin_functions.boolean( b )
       when /^\d+(\.\d+)?$/, Numeric
-        @functions.number( b )
+        @builtin_functions.number( b )
       else
-        @functions.string( b )
+        @builtin_functions.string( b )
       end
     end
 
@@ -1149,8 +1285,8 @@ module REXML
         # result of performing the comparison on the string-values of
         # the two nodes is true.
         set1.product(set2).any? do |node1, node2|
-          node_string1 = @functions.string(node1)
-          node_string2 = @functions.string(node2)
+          node_string1 = @builtin_functions.string(node1)
+          node_string2 = @builtin_functions.string(node2)
           compare(node_string1, op, node_string2)
         end
       elsif set1.kind_of? Array or set2.kind_of? Array
@@ -1171,21 +1307,21 @@ module REXML
         case b
         when true, false
           a.any? do |node|
-            compare(@functions.boolean(node), op, b)
+            compare(@builtin_functions.boolean(node), op, b)
           end
         when Numeric
           a.any? do |node|
-            compare(@functions.number(node), op, b)
+            compare(@builtin_functions.number(node), op, b)
           end
         when /\A\d+(\.\d+)?\z/
-          b = @functions.number(b)
+          b = @builtin_functions.number(b)
           a.any? do |node|
-            compare(@functions.number(node), op, b)
+            compare(@builtin_functions.number(node), op, b)
           end
         else
-          b = @functions.string(b)
+          b = @builtin_functions.string(b)
           a.any? do |node|
-            compare(@functions.string(node), op, b)
+            compare(@builtin_functions.string(node), op, b)
           end
         end
       else
@@ -1219,18 +1355,18 @@ module REXML
       case operator
       when :eq, :neq
         if a_type == :boolean or b_type == :boolean
-          a = @functions.boolean(a) unless a_type == :boolean
-          b = @functions.boolean(b) unless b_type == :boolean
+          a = @builtin_functions.boolean(a) unless a_type == :boolean
+          b = @builtin_functions.boolean(b) unless b_type == :boolean
         elsif a_type == :number or b_type == :number
-          a = @functions.number(a) unless a_type == :number
-          b = @functions.number(b) unless b_type == :number
+          a = @builtin_functions.number(a) unless a_type == :number
+          b = @builtin_functions.number(b) unless b_type == :number
         else
-          a = @functions.string(a) unless a_type == :string
-          b = @functions.string(b) unless b_type == :string
+          a = @builtin_functions.string(a) unless a_type == :string
+          b = @builtin_functions.string(b) unless b_type == :string
         end
       when :lt, :lteq, :gt, :gteq
-        a = @functions.number(a) unless a_type == :number
-        b = @functions.number(b) unless b_type == :number
+        a = @builtin_functions.number(a) unless a_type == :number
+        b = @builtin_functions.number(b) unless b_type == :number
       else
         message = "[BUG] Unexpected compare operator: " +
           "<#{operator.inspect}>: <#{a.inspect}>: <#{b.inspect}>"

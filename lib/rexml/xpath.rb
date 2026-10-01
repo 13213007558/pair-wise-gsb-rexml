@@ -10,6 +10,10 @@ module REXML
     # TODO: either set the namespaces=EMPTY_HASH, or deprecate this.
     EMPTY_HASH = {}
 
+    class FunctionError < StandardError; end
+    class UndefinedFunction < FunctionError; end
+    class WrongNumberOfArguments < ArgumentError; end
+
     # Finds and returns the first node that matches the supplied xpath.
     # element::
     #   The context element
@@ -22,6 +26,11 @@ module REXML
     #   If supplied, a Hash which maps $variables in the query
     #   to values. This can be used to avoid XPath injection attacks
     #   or to automatically handle escaping string values.
+    # functions::
+    #   If supplied, a Hash of extension functions available for this
+    #   evaluation. Functions are identified by a namespace URI and local
+    #   name: <tt>{"http://example.org/ext" => {"score" => proc}}</tt> or
+    #   <tt>{[["http://example.org/ext", "score"]] => proc}</tt>.
     #
     #  XPath.first( node )
     #  XPath.first( doc, "//b"} )
@@ -30,6 +39,7 @@ module REXML
     def XPath::first(element, path=nil, namespaces=nil, variables={}, options={})
       raise "The namespaces argument, if supplied, must be a hash object." unless namespaces.nil? or namespaces.kind_of?(Hash)
       raise "The variables argument, if supplied, must be a hash object." unless variables.kind_of?(Hash)
+      raise "The functions argument, if supplied, must be a hash object." unless options[:functions].nil? or options[:functions].kind_of?(Hash)
       match(element, path, namespaces, variables, options).flatten[0]
     end
 
@@ -45,6 +55,11 @@ module REXML
     #   If supplied, a Hash which maps $variables in the query
     #   to values. This can be used to avoid XPath injection attacks
     #   or to automatically handle escaping string values.
+    # functions::
+    #   If supplied, a Hash of extension functions available for this
+    #   evaluation. Functions are identified by a namespace URI and local
+    #   name: <tt>{"http://example.org/ext" => {"score" => proc}}</tt> or
+    #   <tt>{[["http://example.org/ext", "score"]] => proc}</tt>.
     #
     #  XPath.each( node ) { |el| ... }
     #  XPath.each( node, '/*[@attr='v']' ) { |el| ... }
@@ -54,16 +69,33 @@ module REXML
     def XPath::each(element, path=nil, namespaces=nil, variables={}, options={}, &block)
       raise "The namespaces argument, if supplied, must be a hash object." unless namespaces.nil? or namespaces.kind_of?(Hash)
       raise "The variables argument, if supplied, must be a hash object." unless variables.kind_of?(Hash)
+      raise "The functions argument, if supplied, must be a hash object." unless options[:functions].nil? or options[:functions].kind_of?(Hash)
       match(element, path, namespaces, variables, options).each( &block )
     end
 
     # Returns an array of nodes matching a given XPath.
     def XPath::match(element, path=nil, namespaces=nil, variables={}, options={})
+      raise "The functions argument, if supplied, must be a hash object." unless options[:functions].nil? or options[:functions].kind_of?(Hash)
       parser = XPathParser.new(**options)
       parser.namespaces = namespaces
       parser.variables = variables
       path = "*" unless path
       parser.parse(path,element)
+    end
+
+    def self.extension_functions # :nodoc:
+      Thread.current[:REXML_XPath_extension_functions]
+    end
+
+    def self.with_extension_functions(functions) # :nodoc:
+      current = extension_functions
+      return yield if current
+      Thread.current[:REXML_XPath_extension_functions] = functions
+      begin
+        yield
+      ensure
+        Thread.current[:REXML_XPath_extension_functions] = current
+      end
     end
   end
 end

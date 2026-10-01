@@ -66,6 +66,11 @@ module REXMLTests
                      abbreviate("string-length(a/b[last()])"))
       end
 
+      def test_prefixed_function
+        assert_equal("ext:score(//item)",
+                     abbreviate("ext:score(//item)"))
+      end
+
       def test_descendant_or_self_only
         assert_equal("//",
                      abbreviate("/descendant-or-self::node()/"))
@@ -191,6 +196,14 @@ module REXMLTests
       assert_equal(parser.parse("a/b/* * 2"), parser.parse("a/b/**2"))
       # number(*) * number(*/*) * number(*)
       assert_equal(parser.parse("* * */* * *"), parser.parse("***/***"))
+    end
+
+    def test_prefixed_function
+      parser = REXML::Parsers::XPathParser.new
+      assert_equal([:function,
+                    "ext:score",
+                    [[:document, :descendant_or_self, :node, :child, :qname, "", "item"]]],
+                   parser.parse("ext:score(//item)"))
     end
   end
 end
