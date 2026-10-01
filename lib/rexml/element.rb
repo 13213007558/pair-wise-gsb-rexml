@@ -1519,6 +1519,26 @@ module REXML
       formatter.write( self, output )
     end
 
+    # :call-seq:
+    #   canonicalize(comments=false, node_set=nil) -> string
+    #
+    # Returns the Canonical XML 1.1 serialization as UTF-8 encoded bytes.
+    def canonicalize(comments=false, node_set=nil)
+      C14n::Canonical11.new(comments: comments).canonicalize(self, node_set)
+    end
+    alias c14n canonicalize
+
+    # :call-seq:
+    #   canonicalize_exclusive(comments=false, node_set=nil, inclusive_prefixes=[]) -> string
+    #
+    # Returns the Exclusive XML Canonicalization serialization as UTF-8
+    # encoded bytes.
+    def canonicalize_exclusive(comments=false, node_set=nil, inclusive_prefixes=[])
+      C14n::Exclusive.new(comments: comments,
+                           inclusive_prefixes: inclusive_prefixes).canonicalize(self, node_set)
+    end
+    alias exc_c14n canonicalize_exclusive
+
     # Returns namespace of the element
     def _namespace_internal(namespaces = _calculate_namespaces) # :nodoc:
       _namespace_lookup_internal(prefix, namespaces)

@@ -13,6 +13,8 @@ module REXML
     # target is the "name" of the Instruction; IE, the "tag" in <?tag ...?>
     # content is everything else.
     attr_accessor :target, :content
+    attr_reader :leading_whitespace
+    attr_reader :raw_content
 
     # Constructs a new Instruction
     # @param target can be one of a number of things.  If String, then
@@ -28,17 +30,29 @@ module REXML
         super()
         @target = target
         @content = content
+        @raw_content = nil
+        @leading_whitespace = " " if @content
       when Instruction
         super(content)
         @target = target.target
         @content = target.content
+        @raw_content = target.raw_content
+        @leading_whitespace = target.leading_whitespace
       else
         message =
           "processing instruction target must be String or REXML::Instruction: " \
           "<#{target.inspect}>"
         raise ArgumentError, message
       end
-      @content.strip! if @content
+      @content = @content.strip if @content
+    end
+
+    def _raw_content=(value) # :nodoc:
+      @raw_content = value
+    end
+
+    def _leading_whitespace=(value) # :nodoc:
+      @leading_whitespace = value
     end
 
     def clone

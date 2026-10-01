@@ -1,5 +1,6 @@
 # frozen_string_literal: false
 require_relative "security"
+require_relative "c14n"
 require_relative "element"
 require_relative "xmldecl"
 require_relative "source"

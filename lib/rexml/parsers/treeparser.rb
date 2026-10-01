@@ -48,7 +48,11 @@ module REXML
               c = CData.new( event[1] )
               @build_context.add( c )
             when :processing_instruction
-              @build_context.add( Instruction.new( event[1], event[2] ) )
+              instruction = Instruction.new(event[1], event[2])
+              instruction._raw_content = event[2] if event[2]
+              leading_whitespace = @parser.last_processing_instruction_leading_whitespace
+              instruction._leading_whitespace = leading_whitespace if leading_whitespace
+              @build_context.add(instruction)
             when :end_doctype
               entities.each { |k,v| entities[k] = @build_context.entities[k].value }
               @build_context = @build_context.parent

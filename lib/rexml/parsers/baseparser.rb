@@ -258,7 +258,12 @@ module REXML
         end
       end
 
+      def last_processing_instruction_leading_whitespace
+        @last_processing_instruction_leading_whitespace
+      end
+
       def pull_event
+        @last_processing_instruction_leading_whitespace = nil
         if @closed
           x, @closed = @closed, nil
           return [ :end_element, x ]
@@ -731,7 +736,9 @@ module REXML
         if name == "xml"
           xml_declaration
         else # PITarget
-          if @source.skip_spaces # e.g. <?name content?>
+          leading_whitespace = @source.scan_spaces
+          @last_processing_instruction_leading_whitespace = leading_whitespace
+          if leading_whitespace # e.g. <?name content?>
             start_position = @source.position
             content = @source.read_until("?>")
             unless content.chomp!("?>")

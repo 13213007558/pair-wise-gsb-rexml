@@ -156,6 +156,10 @@ module REXML
       @scanner.skip(Private::SPACES_PATTERN) ? true : false
     end
 
+    def scan_spaces
+      @scanner.scan(Private::SPACES_PATTERN)
+    end
+
     def position
       @scanner.pos
     end
