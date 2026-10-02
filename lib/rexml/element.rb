@@ -1519,6 +1519,12 @@ module REXML
       formatter.write( self, output )
     end
 
+    # Returns the Canonical XML 1.1 representation of this subtree.
+    def canonicalize(include_comments = true)
+      require_relative "formatters/c14n"
+      Formatters::CanonicalXML11.new(include_comments).write(self)
+    end
+
     # Returns namespace of the element
     def _namespace_internal(namespaces = _calculate_namespaces) # :nodoc:
       _namespace_lookup_internal(prefix, namespaces)
@@ -1528,6 +1534,7 @@ module REXML
     def _namespace_lookup_internal(prefix, namespaces = _calculate_namespaces) # :nodoc:
       prefix = (prefix == '') ? 'xmlns' : prefix.delete_prefix("xmlns:")
       ns = namespaces[prefix]
+      ns = "http://www.w3.org/XML/1998/namespace" if ns.nil? and prefix == 'xml'
       ns = +'' if ns.nil? and prefix == 'xmlns'
       ns
     end

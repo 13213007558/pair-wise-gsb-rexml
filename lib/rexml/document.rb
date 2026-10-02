@@ -399,6 +399,14 @@ module REXML
       formatter.write( self, output )
     end
 
+    # Returns the Canonical XML 1.1 representation of the document.
+    #
+    # When +node+ is given, only that element subtree is emitted. Ancestor
+    # namespaces and C14N 1.1 inherited attributes are rendered on its root.
+    def canonicalize(node = nil, include_comments = true)
+      require_relative "formatters/c14n"
+      Formatters::CanonicalXML11.new(include_comments).write(node.nil? ? self : node)
+    end
 
     def Document::parse_stream( source, listener )
       Parsers::StreamParser.new( source, listener ).parse
