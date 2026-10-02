@@ -147,7 +147,8 @@ module REXML
       return @unnormalized if @unnormalized
 
       @unnormalized = Text::unnormalize(@normalized, doctype,
-                                        entity_expansion_text_limit: @element&.document&.entity_expansion_text_limit)
+                                        entity_expansion_text_limit: @element&.document&.entity_expansion_text_limit,
+                                        xml_version: Text.declared_xml_version(document))
     end
 
     # The normalized value of this attribute.  That is, the attribute with
@@ -170,7 +171,8 @@ module REXML
       @element = element
 
       if @normalized
-        Text.check( @normalized, NEEDS_A_SECOND_CHECK )
+        Text.check( @normalized, NEEDS_A_SECOND_CHECK, nil,
+                    xml_version: Text.declared_xml_version(document) )
       end
 
       self

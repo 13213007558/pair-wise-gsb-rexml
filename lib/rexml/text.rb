@@ -29,6 +29,18 @@ module REXML
       (0x10000..0x10FFFF)
     ].freeze
 
+    # Characters that are legal in an XML 1.1 document.  Compared to
+    # VALID_CHAR, almost all control characters are allowed; only NUL,
+    # the surrogate blocks and U+FFFE/U+FFFF are excluded.  The control
+    # characters that XML 1.1 calls "restricted characters" (#x1-#x8,
+    # #xB-#xC, #xE-#x1F and #x7F-#x9F) are included here so that they
+    # are accepted both literally and as character references.
+    VALID_CHAR_XML_1_1 = [
+      (0x1..0xD7FF),
+      (0xE000..0xFFFD),
+      (0x10000..0x10FFFF)
+    ].freeze
+
     VALID_XML_CHARS = Regexp.new('^['+
       VALID_CHAR.map { |item|
         case item
@@ -39,6 +51,23 @@ module REXML
         end
       }.join +
     ']*$').freeze
+
+    VALID_XML_CHARS_XML_1_1 = Regexp.new('^['+
+      VALID_CHAR_XML_1_1.map { |item|
+        case item
+        when Integer
+          [item].pack('U').force_encoding('utf-8')
+        when Range
+          [item.first, '-'.ord, item.last].pack('UUU').force_encoding('utf-8')
+        end
+      }.join +
+    ']*$').freeze
+
+    # Line ending sequences.  XML 1.0 only treats #xD #xA and #xD as
+    # line endings; XML 1.1 additionally recognizes NEL (#x85) and LS
+    # (#x2028), including the two-character sequence #xD #x85.
+    LINE_ENDINGS = /\r\n?/
+    LINE_ENDINGS_XML_1_1 = /\r\n|\r\u{85}|[\r\u{85}\u{2028}]/
 
     # Constructor
     # +arg+ if a String, the content is set to the String.  If a Text,
@@ -99,27 +128,38 @@ module REXML
       end
 
       @string.squeeze!(" \n\t") unless respect_whitespace
-      @string.gsub!(/\r\n?/, "\n")
+      @string.gsub!(LINE_ENDINGS, "\n")
       @raw = raw unless raw.nil?
       @entity_filter = entity_filter if entity_filter
       clear_cache
 
-      Text.check(@string, illegal) if @raw
+      Text.check(@string, illegal, nil,
+                 xml_version: Text.declared_xml_version(document)) if @raw
     end
 
     def parent= parent
       super(parent)
-      Text.check(@string, NEEDS_A_SECOND_CHECK) if @raw and @parent
+      if @raw and @parent
+        Text.check(@string, NEEDS_A_SECOND_CHECK, nil,
+                   xml_version: Text.declared_xml_version(document))
+      end
     end
 
     # check for illegal characters
-    def Text.check string, pattern, doctype = nil
+    def Text.check string, pattern, doctype = nil, xml_version: nil
+      if xml_version == "1.1"
+        valid_char = VALID_CHAR_XML_1_1
+        valid_xml_chars = VALID_XML_CHARS_XML_1_1
+      else
+        valid_char = VALID_CHAR
+        valid_xml_chars = VALID_XML_CHARS
+      end
 
       # illegal anywhere
-      if !string.match?(VALID_XML_CHARS)
+      if !string.match?(valid_xml_chars)
         string.chars.each do |c|
           case c.ord
-          when *VALID_CHAR
+          when *valid_char
           else
             raise "Illegal character #{c.inspect} in raw string #{string.inspect}"
           end
@@ -153,7 +193,7 @@ module REXML
           end
 
           case (character_reference[0] == "x" ? character_reference[1..-1].to_i(16) : character_reference[0..-1].to_i)
-          when *VALID_CHAR
+          when *valid_char
           else
             raise "Illegal character #{string.inspect} in raw string #{string.inspect}"
           end
@@ -187,7 +227,7 @@ module REXML
     # +returns+ the text itself to enable method chain like
     # 'text << "XXX" << "YYY"'.
     def <<( to_append )
-      @string << to_append.gsub( /\r\n?/, "\n" )
+      @string << to_append.gsub( LINE_ENDINGS, "\n" )
       clear_cache
       self
     end
@@ -241,7 +281,8 @@ module REXML
     #   u.value   #-> "sean russell"
     def value
       @unnormalized ||= Text::unnormalize(@string, doctype,
-                                          entity_expansion_text_limit: document&.entity_expansion_text_limit)
+                                          entity_expansion_text_limit: document&.entity_expansion_text_limit,
+                                          xml_version: Text.declared_xml_version(document))
     end
 
     # Sets the contents of this text node.  This expects the text to be
@@ -252,7 +293,7 @@ module REXML
     #   e[0].value = "bar"    # <a>bar</a>
     #   e[0].value = "<a>"    # <a>&lt;a&gt;</a>
     def value=( val )
-      @string = val.gsub( /\r\n?/, "\n" )
+      @string = val.gsub( LINE_ENDINGS, "\n" )
       clear_cache
       @raw = false
     end
@@ -347,6 +388,27 @@ module REXML
     end
 
     EREFERENCE = /&(?!#{Entity::NAME};)/
+
+    # Returns the XML version declared by +document+'s XML declaration,
+    # or nil when +document+ is nil or has no XML declaration.  Unlike
+    # Document#version, this never modifies +document+.
+    def Text.declared_xml_version(document)
+      return nil unless document
+      declaration = document[0]
+      declaration.version if declaration.kind_of?(XMLDecl)
+    end
+
+    # Normalizes the line endings in +string+ to "\n".  When
+    # +xml_version+ is "1.1", NEL (U+0085) and LS (U+2028) are
+    # recognized as line endings in addition to "\r\n" and "\r".
+    def Text.normalize_line_endings(string, xml_version=nil)
+      if xml_version == "1.1"
+        string.gsub(LINE_ENDINGS_XML_1_1, "\n")
+      else
+        string.gsub(LINE_ENDINGS, "\n")
+      end
+    end
+
     # Escapes all possible entities
     def Text::normalize( input, doctype=nil, entity_filter=nil )
       copy = input.to_s
@@ -373,11 +435,12 @@ module REXML
     end
 
     # Unescapes all possible entities
-    def Text::unnormalize( string, doctype=nil, filter=nil, illegal=nil, entity_expansion_text_limit: nil, expanding: nil )
+    def Text::unnormalize( string, doctype=nil, filter=nil, illegal=nil, entity_expansion_text_limit: nil, expanding: nil, xml_version: nil )
       entity_expansion_text_limit ||= Security.entity_expansion_text_limit
       sum = 0
-      string.gsub( /\r\n?/, "\n" ).gsub( REFERENCE ) {
-        s = Text.expand($&, doctype, filter, expanding: expanding)
+      Text.normalize_line_endings(string, xml_version).gsub( REFERENCE ) {
+        s = Text.expand($&, doctype, filter, expanding: expanding,
+                        xml_version: xml_version)
         if sum + s.bytesize > entity_expansion_text_limit
           raise "entity expansion has grown too large"
         else
@@ -392,21 +455,27 @@ module REXML
     # the validation Text.check applies to literal references. This keeps the
     # entity-expansion path from emitting XML-forbidden characters (NUL,
     # control chars, U+FFFE/U+FFFF, code points beyond U+10FFFF, ...).
-    def Text.expand_character_reference(code_point, reference)
+    # When +xml_version+ is "1.1", the wider XML 1.1 character range is
+    # used instead, so that references to restricted characters such as
+    # &#xB; are accepted.
+    def Text.expand_character_reference(code_point, reference, xml_version: nil)
+      valid_char = (xml_version == "1.1") ? VALID_CHAR_XML_1_1 : VALID_CHAR
       case code_point
-      when *VALID_CHAR
+      when *valid_char
         [code_point].pack('U*')
       else
         raise ParseException.new("Illegal character reference: <#{reference}>")
       end
     end
 
-    def Text.expand(ref, doctype, filter, expanding: nil)
+    def Text.expand(ref, doctype, filter, expanding: nil, xml_version: nil)
       if ref[1] == ?#
         if ref[2] == ?x
-          expand_character_reference(ref[3...-1].to_i(16), ref)
+          expand_character_reference(ref[3...-1].to_i(16), ref,
+                                     xml_version: xml_version)
         else
-          expand_character_reference(ref[2...-1].to_i, ref)
+          expand_character_reference(ref[2...-1].to_i, ref,
+                                     xml_version: xml_version)
         end
       elsif ref == '&amp;'
         '&'

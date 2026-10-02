@@ -83,7 +83,8 @@ module REXML
       expanding.add(@name)
       result = Text::unnormalize(@value, parent,
                                  entity_expansion_text_limit: document&.entity_expansion_text_limit,
-                                 expanding: expanding)
+                                 expanding: expanding,
+                                 xml_version: Text.declared_xml_version(document))
       expanding.delete(@name)
       result
     end

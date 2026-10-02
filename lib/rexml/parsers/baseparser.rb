@@ -152,6 +152,7 @@ module REXML
         PEDECL_PATTERN = "\\s+(%)\\s+#{NAME}\\s+#{PEDEF}\\s*>"
         ENTITYDECL_PATTERN = /(?:#{GEDECL_PATTERN})|(?:#{PEDECL_PATTERN})/um
         CARRIAGE_RETURN_NEWLINE_PATTERN = /\r\n?/
+        LINE_ENDINGS_XML_1_1_PATTERN = /\r\n|\r\u{85}|[\r\u{85}\u{2028}]/
         CHARACTER_REFERENCES = /&#((?:\d+)|(?:x[a-fA-F0-9]+));/
         DEFAULT_ENTITIES_PATTERNS = {}
         default_entities = ['gt', 'lt', 'quot', 'apos', 'amp']
@@ -375,6 +376,7 @@ module REXML
                 raise REXML::ParseException.new("Parameter entity references forbidden in internal subset: #{match[2]}", @source)
               else
                 match[2] = match[2][1..-2]
+                match[2] = normalize_line_endings_xml_1_1(match[2]) if xml_1_1?
                 match.pop if match.size == 4
                 # match is [ :entity, name, value ]
               end
@@ -445,7 +447,14 @@ module REXML
             # here explicitly.
             @source.ensure_buffer
             if @source.match?("/", true)
-              @namespaces_restore_stack.pop
+              if xml_1_1?
+                # Namespaces in XML 1.1: a prefix can be undeclared, so
+                # declarations made by the closed element must be
+                # undone to restore the enclosing scope.
+                pop_namespaces_restore
+              else
+                @namespaces_restore_stack.pop
+              end
               last_tag = @tags.pop
               md = @source.match(Private::CLOSE_PATTERN, true)
               if md and !last_tag
@@ -466,6 +475,7 @@ module REXML
               elsif @source.match?("[CDATA[", true)
                 text = @source.read_until("]]>")
                 if text.chomp!("]]>")
+                  text = normalize_line_endings_xml_1_1(text) if xml_1_1?
                   return [ :cdata, text ]
                 else
                   raise REXML::ParseException.new("Malformed CDATA: Missing end ']]>'", @source)
@@ -512,6 +522,7 @@ module REXML
             if text.chomp!("<")
               @source.position -= "<".bytesize
             end
+            text = normalize_line_endings_xml_1_1(text) if xml_1_1?
             if @tags.empty?
               unless /\A\s*\z/.match?(text)
                 if @have_root
@@ -571,11 +582,7 @@ module REXML
 
       # Unescapes all possible entities
       def unnormalize( string, entities=nil, filter=nil, expanding: nil )
-        if string.include?("\r")
-          rv = string.gsub( Private::CARRIAGE_RETURN_NEWLINE_PATTERN, "\n" )
-        else
-          rv = string.dup
-        end
+        rv = normalize_line_endings(string)
         matches = rv.scan( REFERENCE_RE )
         return rv if matches.size == 0
         rv.gsub!( Private::CHARACTER_REFERENCES ) {
@@ -585,7 +592,8 @@ module REXML
           else
             code_point = Integer(m, 10)
           end
-          Text.expand_character_reference(code_point, "&##{m};")
+          Text.expand_character_reference(code_point, "&##{m};",
+                                          xml_version: @version)
         }
         matches.collect!{|x|x[0]}.compact!
         if filter
@@ -619,6 +627,35 @@ module REXML
       end
 
       private
+      # Whether the document declares itself as XML 1.1.  Documents
+      # without an XML declaration, or with any other version, are
+      # parsed with the XML 1.0 rules.
+      def xml_1_1?
+        @version == "1.1"
+      end
+
+      # Normalizes the line endings in +string+ to "\n", following the
+      # rules of the declared XML version.  Characters produced by
+      # character references are not affected: references are expanded
+      # after this normalization runs.
+      def normalize_line_endings(string)
+        if xml_1_1?
+          normalize_line_endings_xml_1_1(string)
+        elsif string.include?("\r")
+          string.gsub(Private::CARRIAGE_RETURN_NEWLINE_PATTERN, "\n")
+        else
+          string.dup
+        end
+      end
+
+      def normalize_line_endings_xml_1_1(string)
+        if Private::LINE_ENDINGS_XML_1_1_PATTERN.match?(string)
+          string.gsub(Private::LINE_ENDINGS_XML_1_1_PATTERN, "\n")
+        else
+          string
+        end
+      end
+
       def add_namespace(prefix, uri)
         @namespaces_restore_stack.last[prefix] = @namespaces[prefix]
         if uri.nil?
@@ -875,7 +912,13 @@ module REXML
                   "(http://www.w3.org/TR/REC-xml-names/#ns-decl)"
                 raise REXML::ParseException.new( msg, @source, self)
               end
-              add_namespace(local_part, value)
+              if value.empty? and xml_1_1?
+                # Namespaces in XML 1.1: a namespace declaration with an
+                # empty value undeclares the prefix.
+                add_namespace(local_part, nil)
+              else
+                add_namespace(local_part, value)
+              end
             elsif prefix
               prefixes << prefix unless prefix == "xml"
             end
