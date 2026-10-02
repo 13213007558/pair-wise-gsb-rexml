@@ -1,5 +1,16 @@
 # News
 
+## 3.4.5 - 2026-10-02 {#version-3-4-5}
+
+### Additions
+
+  * Added XInclude 1.0 processing (`REXML::XInclude`), supporting
+    `parse="xml"` and `parse="text"` includes, `<xi:fallback>`, nested
+    includes, base URI and language fixups, and include-loop detection with
+    the complete reference chain. Resources are fetched through a caller
+    supplied resolver (the default resolver only reads `file:` URIs and never
+    accesses the network). XPointer and fragment identifiers are rejected.
+
 ## 3.4.4 - 2025-09-10 {#version-3-4-4}
 
 ### Improvement
