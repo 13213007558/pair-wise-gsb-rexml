@@ -1,5 +1,16 @@
 # News
 
+## 3.4.5 {#version-3-4-5}
+
+### Improvement
+
+  * Add experimental XInclude 1.0 processing via `REXML::XInclude`.
+    Supports `parse="xml"` and `parse="text"`, `xi:fallback`, nested
+    includes, inclusion loop detection with the full reference chain,
+    and `xml:base`/`xml:lang` fixup.  Resources are retrieved through
+    a caller-provided resolver; the default resolver never accesses
+    the network.  The `xpointer` attribute is rejected for now.
+
 ## 3.4.4 - 2025-09-10 {#version-3-4-4}
 
 ### Improvement

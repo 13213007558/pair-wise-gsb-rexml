@@ -454,3 +454,5 @@ module REXML
     end
   end
 end
+
+require_relative "xinclude"
