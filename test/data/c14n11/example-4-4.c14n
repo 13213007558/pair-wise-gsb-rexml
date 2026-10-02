@@ -1,0 +1,9 @@
+<doc>
+   <text>First line&#xD;
+Second line</text>
+   <value>2</value>
+   <compute>value&gt;"0" &amp;&amp; value&lt;"1" ?"done"</compute>
+   <compute2>value&gt;"0" &amp;&amp; value&lt;"1" ?"done"</compute2>
+   <norm attr=" '    &#xD;&#xA;&#x9;   "></norm>
+   <norm2 attr="Hello world!"></norm2>
+</doc>

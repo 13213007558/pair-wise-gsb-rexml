@@ -1,0 +1,5 @@
+<doc>
+   <e1>foo</e1>
+   <e2></e2>
+   <e3>&lt;hello&gt;</e3>
+</doc>

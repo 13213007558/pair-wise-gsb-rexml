@@ -1,0 +1,1 @@
+<doc xml:base="http://www.example.com/dir1/file1"><a xml:base="../dir2/"><b xml:base="file2"/></a></doc>

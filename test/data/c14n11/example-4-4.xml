@@ -1,0 +1,9 @@
+<!DOCTYPE doc [<!ENTITY ent1 "Hello">]>
+<doc>
+   <text>First line&#x0d;&#10;Second line</text>
+   <value>&#x32;</value>
+   <compute><![CDATA[value>"0" && value<"1" ?]]>"done"</compute>
+   <compute2>value&gt;"0" &amp;&amp; value&lt;"1" ?"done"</compute2>
+   <norm attr=" &#x27;   &#x20;&#13;&#xa;&#9;   "/>
+   <norm2 attr="&ent1; world!"/>
+</doc>

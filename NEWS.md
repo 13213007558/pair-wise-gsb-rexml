@@ -1,5 +1,15 @@
 # News
 
+## 3.4.5 - 2026-10-02 {#version-3-4-5}
+
+### Improvement
+
+  * Add `REXML::C14N` that produces Canonical XML 1.1 output.
+    `REXML::C14N.canonicalize` canonicalizes a document or a
+    subtree (document subset) with optional comment inclusion,
+    inheriting in-scope namespaces and xml:lang/xml:space/xml:id/
+    xml:base attributes at the subtree root as specified.
+
 ## 3.4.4 - 2025-09-10 {#version-3-4-4}
 
 ### Improvement
