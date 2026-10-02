@@ -1,6 +1,7 @@
 # frozen_string_literal: false
 require_relative 'functions'
 require_relative 'xpath_parser'
+require_relative 'xpath/stream'
 
 module REXML
   # Wrapper class.  Use this class to access the XPath functions.
@@ -55,6 +56,17 @@ module REXML
       raise "The namespaces argument, if supplied, must be a hash object." unless namespaces.nil? or namespaces.kind_of?(Hash)
       raise "The variables argument, if supplied, must be a hash object." unless variables.kind_of?(Hash)
       match(element, path, namespaces, variables, options).each( &block )
+    end
+
+    # Streams elements matching a restricted element XPath without building
+    # a DOM.
+    # +path+ is validated before +source+ is read. See REXML::XPath::Stream
+    # for the supported XPath subset.
+    def XPath::each_stream(source, path, namespaces=nil, &block)
+      unless namespaces.nil? || namespaces.kind_of?(Hash)
+        raise ArgumentError, "argument must be a Hash or nil"
+      end
+      Stream.new(path, namespaces).parse(source, &block)
     end
 
     # Returns an array of nodes matching a given XPath.
