@@ -5,6 +5,8 @@ require_relative "namespace"
 require_relative 'entity'
 require_relative 'attlistdecl'
 require_relative 'xmltokens'
+require_relative 'validation/dtd'
+require 'strscan'
 
 module REXML
   class ReferenceWriter
@@ -113,27 +115,59 @@ module REXML
     end
 
     def attributes_of element
-      raw_attributes = _attlist_mappings[element] || {}
-      raw_attributes.map do |key, value|
-        Attribute.new(key, value)
+      (attribute_declarations[element] || {}).map do |name, definition|
+        Attribute.new(name, definition.default) unless definition.default.nil?
       end
+      .compact
     end
 
     def attribute_of element, attribute
-      _attlist_mappings[element]&.[](attribute)
+      attribute_declarations[element]&.[](attribute)&.default
+    end
+
+    def element_declarations
+      @element_declarations ||= grep(ElementDecl).each_with_object({}) do |declaration, mapping|
+        mapping[declaration.name] ||= declaration
+      end
+    end
+
+    def attribute_declarations
+      @attribute_declarations ||= grep(AttlistDecl).each_with_object({}) do |declaration, mapping|
+        element_mapping = mapping[declaration.element_name] ||= {}
+        declaration.definitions.each do |definition|
+          element_mapping[definition.name] ||= definition
+        end
+      end
     end
 
     def _attlist_mappings # :nodoc:
-      mapping = {}
-      grep(AttlistDecl).each do |child|
-        raw_attributes = mapping[child.element_name] ||= {}
-        child.each do |key, val|
-          # First declaration wins
-          raw_attributes[key] = val unless raw_attributes.key? key
+      attribute_declarations.each_with_object({}) do |(element, definitions), mapping|
+        mapping[element] = definitions.each_with_object({}) do |(name, definition), attributes|
+          attributes[name] = definition.default
         end
       end
-      mapping
     end
+
+    def apply_default_attributes(element = nil)
+      element ||= parent.root if parent.is_a?(Document)
+      return self if element.nil?
+
+      if element.is_a?(Element)
+        definitions = attribute_declarations[element.expanded_name]
+        definitions&.each do |name, definition|
+          next if definition.default.nil?
+          next if element.attributes.key?(name)
+
+          element.attributes << Attribute.new(name, definition.default, element)
+        end
+        element.children.grep(Element).each do |child|
+          apply_default_attributes(child)
+        end
+      end
+      self
+    end
+
+    alias add_default_attributes apply_default_attributes
 
     def clone
       DocType.new self
@@ -258,8 +292,113 @@ module REXML
 
   public
   class ElementDecl < Declaration
+    include XMLTokens
+
+    attr_reader :name, :content_model
+
     def initialize( src )
       super
+      scanner = StringScanner.new(src.to_s)
+      scanner.scan(/\A\s*<!ELEMENT\s+/um) or
+        raise ParseException.new("Malformed element declaration: #{src}")
+      @name = scanner.scan(/\G#{NAME_STR}/ou)
+      raise ParseException.new("Malformed element declaration: #{src}") if @name.nil?
+      @content_model = parse_content_model(scanner, src)
+    end
+
+    def to_s
+      @string.end_with?(">") ? @string : super
+    end
+
+    private
+
+    def parse_content_model(scanner, source)
+      scanner.skip(/\s+/um)
+      model = if scanner.scan(/\GEMPTY\b/um)
+                :empty
+              elsif scanner.scan(/\GANY\b/um)
+                :any
+              elsif scanner.match?(/\G\(/um)
+                parse_content_particle(scanner, source)
+              else
+                raise ParseException.new("Malformed element declaration: #{source}")
+              end
+      scanner.skip(/\s*/um)
+      scanner.scan(/\G>/um)
+      unless scanner.eos?
+        raise ParseException.new("Malformed element declaration: #{source}")
+      end
+      model
+    end
+
+    def parse_content_particle(scanner, source)
+      unless scanner.scan(/\G\(\s*/um)
+        raise ParseException.new("Malformed element declaration: #{source}")
+      end
+
+      if scanner.scan(/\G#PCDATA/um)
+        names = []
+        loop do
+          scanner.skip(/\s*/um)
+          if scanner.scan(/\G\)/um)
+            repeated = !scanner.scan(/\G\*/um).nil?
+            unless repeated || names.empty?
+              raise ParseException.new("Malformed element declaration: #{source}")
+            end
+            return [:mixed, names, repeated]
+          elsif scanner.scan(/\G\|/um)
+            scanner.skip(/\s*/um)
+            name = scanner.scan(/\G#{NAME_STR}/ou)
+            raise ParseException.new("Malformed element declaration: #{source}") if name.nil?
+            names << name
+          else
+            raise ParseException.new("Malformed element declaration: #{source}")
+          end
+        end
+      end
+
+      children = [parse_content_term(scanner, source)]
+      connector = nil
+      loop do
+        scanner.skip(/\s*/um)
+        if scanner.scan(/\G\)/um)
+          occurrence = parse_occurrence(scanner)
+          kind = connector == "|" ? :choice : :sequence
+          return [kind, children, occurrence]
+        end
+
+        scanned_connector = scanner.scan(/\G[,|]/um)
+        raise ParseException.new("Malformed element declaration: #{source}") if scanned_connector.nil?
+        if connector && connector != scanned_connector
+          raise ParseException.new("Malformed element declaration: #{source}")
+        end
+        connector = scanned_connector
+        scanner.skip(/\s*/um)
+        children << parse_content_term(scanner, source)
+      end
+    end
+
+    def parse_content_term(scanner, source)
+      if scanner.match?(/\G\(/um)
+        parse_content_particle(scanner, source)
+      else
+        name = scanner.scan(/\G#{NAME_STR}/ou)
+        raise ParseException.new("Malformed element declaration: #{source}") if name.nil?
+        [:element, name, parse_occurrence(scanner)]
+      end
+    end
+
+    def parse_occurrence(scanner)
+      case scanner.scan(/\G[?*+]/um)
+      when "?"
+        :optional
+      when "*"
+        :zero_or_more
+      when "+"
+        :one_or_more
+      else
+        :once
+      end
     end
   end
 

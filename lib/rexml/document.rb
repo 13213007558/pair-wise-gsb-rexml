@@ -244,6 +244,24 @@ module REXML
       @children.find { |item| item.kind_of? DocType }
     end
 
+    # Validates the internal DTD subset against the document tree.
+    def validate_dtd
+      Validation::DTD.validate(self)
+    end
+
+    # Returns validation errors without adding or changing attributes.
+    def dtd_validation_errors
+      Validation::DTD.errors(self)
+    end
+
+    # Adds declared default and fixed attributes to the document tree.
+    def add_default_attributes
+      doctype&.apply_default_attributes(root)
+      self
+    end
+
+    alias apply_default_attributes add_default_attributes
+
     # :call-seq:
     #   xml_decl -> xml_decl
     #
