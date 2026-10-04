@@ -244,6 +244,26 @@ module REXML
       @children.find { |item| item.kind_of? DocType }
     end
 
+    # Materializes attributes with defaults declared in the internal DTD.
+    def apply_default_attributes
+      doctype&.apply_default_attributes
+      self
+    end
+
+    # Validates the document against its internal DTD and returns an array of
+    # REXML::Validation::DTD::Error objects.  Returns an empty array when the
+    # document has no DTD.
+    def validate
+      doctype ? doctype.validate : []
+    end
+
+    # Like #validate but raises REXML::Validation::ValidationException on the
+    # first validation error.
+    def validate!
+      doctype&.validate!
+      true
+    end
+
     # :call-seq:
     #   xml_decl -> xml_decl
     #

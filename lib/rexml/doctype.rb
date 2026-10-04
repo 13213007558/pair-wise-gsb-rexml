@@ -123,6 +123,25 @@ module REXML
       _attlist_mappings[element]&.[](attribute)
     end
 
+    def dtd_validator
+      @dtd_validator ||= Validation::DTD.new(self)
+    end
+
+    def apply_default_attributes
+      require_relative "validation/dtd"
+      dtd_validator.apply_default_attributes(document)
+    end
+
+    def validate
+      require_relative "validation/dtd"
+      dtd_validator.validate(document)
+    end
+
+    def validate!
+      require_relative "validation/dtd"
+      dtd_validator.validate!(document)
+    end
+
     def _attlist_mappings # :nodoc:
       mapping = {}
       grep(AttlistDecl).each do |child|
@@ -258,8 +277,15 @@ module REXML
 
   public
   class ElementDecl < Declaration
+    attr_reader :element_name
+    attr_reader :content
+
     def initialize( src )
       super
+      if src =~ /\A\s*(?:<!ELEMENT)?\s*(#{XMLTokens::NAME_STR})\s+(.+?)(?:>\s*)?\z/m
+        @element_name = $1
+        @content = $2.strip
+      end
     end
   end
 
