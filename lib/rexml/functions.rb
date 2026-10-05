@@ -48,6 +48,8 @@ module REXML
 
     def context=(value); @context = value; end
 
+    attr_reader :node_indexes
+
     # The evaluation's shared index cache, set by XPathParser so that sorting
     # here does not re-index the same children for every call.  It is
     # nil for the shared Functions instance, which is reachable without going
@@ -66,6 +68,24 @@ module REXML
     # Returns the size of the given list of nodes.
     def count( node_set )
       node_set.size
+    end
+
+    def node_set(object)
+      nodeset =
+        case object
+        when REXML::Node
+          [object]
+        when Array
+          object
+        else
+          raise TypeError, "XPath node set must be a REXML::Node or array of nodes: #{object.class}"
+        end
+      unless nodeset.all? { |node| node.is_a?(REXML::Node) }
+        raise TypeError, "XPath node set must contain only REXML::Node objects"
+      end
+      nodes = Set.new.compare_by_identity
+      nodeset.each { |node| nodes << node }
+      XPathParser.sort(nodes.to_a, @node_indexes)
     end
 
     # Since REXML is non-validating, this method is not implemented as it

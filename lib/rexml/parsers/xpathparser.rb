@@ -209,7 +209,8 @@ module REXML
           path << predicate_to_path( parsed, &block )
         when :function
           parsed.shift
-          name = parsed.shift
+          function_name = parsed.shift
+          name = function_name.is_a?(Array) ? "#{function_name[1]}:#{function_name[2]}" : function_name
           path << name
           path << "("
           parsed.shift.each_with_index do |argument, i|
@@ -650,13 +651,18 @@ module REXML
           parsed << :variable
           parsed << varname
           #arry << @variables[ varname ]
-        when /^(\w[-\w]*)(?:\()/
-          fname = $1
+        when /^(?:(#{NCNAME_STR}):)?(\w[-\w]*)\(/u
+          prefix = $1
+          fname = $2
           tmp = $'
           return path if fname =~ NT
           path = tmp
           parsed << :function
-          parsed << fname
+          if prefix
+            parsed << [:qname, prefix, fname]
+          else
+            parsed << fname
+          end
           path = FunctionCall(path, parsed)
         when NUMBER
           varname = $1.nil? ? $2 : $1

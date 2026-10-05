@@ -58,18 +58,22 @@ module REXML
 
     DEBUG = (ENV["REXML_XPATH_PARSER_DEBUG"] == "true")
 
-    def initialize(strict: false)
+    def initialize(strict: false, context: nil)
       @debug = DEBUG
       @parser = REXML::Parsers::XPathParser.new
       @namespaces = nil
       @variables = {}
       @functions = FunctionsClass.new
+      @function_registry = XPath::FunctionRegistry.new
+      @runtime_context = nil
       @attlist_mappings = nil
       @document = nil
       @element_namespaces_cache = {}
       @node_indexes = nil
+      @evaluation_stack = []
       @nest = 0
       @strict = strict
+      self.context = context if context
     end
 
     def namespaces=( namespaces={} )
@@ -78,6 +82,13 @@ module REXML
 
     def variables=(vars)
       @variables = vars.transform_values { |v| coerce_variable(v) }
+    end
+
+    def context=(context)
+      @namespaces = context.namespaces
+      @variables = (context.variables || {}).transform_values { |v| coerce_variable(v) }
+      @function_registry = context.functions
+      @strict = context.strict?
     end
 
     def parse path, node
@@ -152,23 +163,34 @@ module REXML
       @document = node.document
       # A fresh cache per evaluation, so that a document modified between two
       # evaluations is not ordered by stale indexes.
-      @node_indexes = {}.compare_by_identity
-      @functions.node_indexes = @node_indexes
-      nodeset = [node]
-      result = expr(path_stack, nodeset)
+      node_indexes = {}.compare_by_identity
+      @evaluation_stack.push([@node_indexes, @functions.node_indexes,
+                              @document, @runtime_context,
+                              @element_namespaces_cache, @attlist_mappings])
+      @element_namespaces_cache = {}
+      @attlist_mappings = nil
+      @node_indexes = node_indexes
+      @functions.node_indexes = node_indexes
+      begin
+        nodeset = [node]
+        result = expr(path_stack, nodeset)
+      ensure
+        previous_node_indexes, previous_functions_indexes,
+          previous_document, previous_runtime_context,
+          previous_element_namespaces_cache, previous_attlist_mappings = @evaluation_stack.pop
+        @document = previous_document
+        @node_indexes = previous_node_indexes
+        @functions.node_indexes = previous_functions_indexes
+        @runtime_context = previous_runtime_context
+        @element_namespaces_cache = previous_element_namespaces_cache
+        @attlist_mappings = previous_attlist_mappings
+      end
       case result
       when Array # nodeset
-        XPathParser.sort(result, @node_indexes)
+        normalize_nodeset(result)
       else
         [result]
       end
-    ensure
-      # Let go of the indexes: they are no use to the next evaluation, and the
-      # cache holds one entry per node it had to look up.  The document itself
-      # stays reachable through @document and @element_namespaces_cache, which
-      # outlive the evaluation.
-      @node_indexes = nil
-      @functions.node_indexes = nil
     end
 
     private
@@ -329,12 +351,12 @@ module REXML
           return -@functions.number(res)
         when :not
         when :function
-          func_name = path_stack.shift
+          function_name = path_stack.shift
           arguments = path_stack.shift
 
           if nodeset.size != 1
             message = "[BUG] Node set size must be 1 for function call: "
-            message += "<#{func_name}>: <#{nodeset.inspect}>: "
+            message += "<#{function_name.inspect}>: <#{nodeset.inspect}>: "
             message += "<#{arguments.inspect}>"
             raise message
           end
@@ -347,18 +369,26 @@ module REXML
             target_context[:node]  = node
             target_context[:position] = 1
           end
-          args = arguments.dclone.collect do |arg|
-            expr(arg, nodeset, target_context)
+          previous_runtime_context = @runtime_context
+          new_runtime_context = runtime_context(target_context)
+          begin
+            @runtime_context = new_runtime_context
+            @functions.context = @runtime_context
+            args = arguments.dclone.collect do |arg|
+              expr(arg, nodeset, target_context)
+            end
+
+            # TODO: Maybe, this is not XPath spec behavior.
+            # This behavior must be reconsidered.
+            result = call_xpath_function(function_name, args)
+
+            return result if path_stack.empty?
+
+            nodeset = apply_remaining_predicates(path_stack, result)
+          ensure
+            @runtime_context = previous_runtime_context
+            @functions.context = @runtime_context
           end
-          @functions.context = target_context
-
-          # TODO: Maybe, this is not XPath spec behavior.
-          # This behavior must be reconsidered.
-          result = @functions.call(func_name.tr('_', '-'), args: args, fallback: [])
-
-          return result if path_stack.empty?
-
-          nodeset = apply_remaining_predicates(path_stack, result)
         when :group
           sub_expression = path_stack.shift
           result = expr(sub_expression, nodeset, context)
@@ -380,6 +410,80 @@ module REXML
       step(path_stack) do
         [:iterate_nodesets, [XPathParser.sort(value, @node_indexes)]]
       end
+    end
+
+    def runtime_context(context)
+      case context
+      when XPath::FunctionContext
+        context
+      else
+        XPath::FunctionContext.new(
+          node: context[:node],
+          position: context[:position],
+          size: context[:size]
+        )
+      end
+    end
+
+    def call_xpath_function(function_name, args)
+      case function_name
+      when String
+        builtin_name = function_name.tr('_', '-')
+        if FunctionsClass::AVAILABLE_FUNCTIONS.include?(builtin_name)
+          result = @functions.call(builtin_name, args: args, fallback: [])
+        else
+          function = @function_registry["", function_name]
+          result = function ? function.call(args, @runtime_context, @functions) : []
+        end
+      when Array
+        _, prefix, local_name = function_name
+        namespace_uri = function_namespace_uri(prefix, @runtime_context.node)
+        function = @function_registry[namespace_uri, local_name]
+        if function.nil?
+          raise ArgumentError, "Unknown XPath function: #{prefix}:#{local_name}"
+        end
+        result = function.call(args, @runtime_context, @functions)
+      else
+        raise ArgumentError, "Unknown XPath function: #{function_name.inspect}"
+      end
+      normalize_function_result(result)
+    end
+
+    def function_namespace_uri(prefix, node)
+      namespace_uri =
+        if @namespaces
+          @namespaces[prefix]
+        elsif node.respond_to?(:node_type)
+          element = node.node_type == :attribute ? node.element : node
+          element_namespace_lookup(element, prefix) if element.respond_to?(:namespace)
+        end
+
+      if namespace_uri.nil? || namespace_uri.empty?
+        raise ArgumentError, "Undefined XPath function namespace prefix: #{prefix}"
+      end
+      namespace_uri
+    end
+
+    def normalize_function_result(result)
+      case result
+      when Array
+        normalize_nodeset(result)
+      when REXML::Node
+        normalize_nodeset([result])
+      when String, Numeric, true, false
+        result
+      else
+        raise TypeError, "unsupported XPath function result type: #{result.class}"
+      end
+    end
+
+    def normalize_nodeset(nodeset)
+      unless nodeset.all? { |node| node.is_a?(REXML::Node) }
+        raise TypeError, "XPath node set must contain only REXML::Node objects"
+      end
+      nodes = Set.new.compare_by_identity
+      nodeset.each { |node| nodes << node }
+      XPathParser.sort(nodes.to_a, @node_indexes)
     end
 
     # Validates and coerces a variable value to a type that can be used in XPath expressions.
@@ -428,8 +532,14 @@ module REXML
         # It's possible to optimize this by checking the actual value of the variable.
         true
       when :function
-        # functions that return number is position dependent. eg. `[position() = string-length(@attr)]`
-        %w[number ceiling round floor string-length sum count].include?(predicate_expr[1])
+        function_name = predicate_expr[1]
+        local_name = function_name.is_a?(Array) ? function_name[2] : function_name
+        builtin_name = local_name.tr('_', '-')
+        if FunctionsClass::AVAILABLE_FUNCTIONS.include?(builtin_name)
+          %w[number ceiling round floor string-length sum count].include?(builtin_name)
+        else
+          true
+        end
       when :group
         position_dependent?(predicate_expr[1])
       when :descendant, :descendant_or_self, :ancestor, :ancestor_or_self,
@@ -784,12 +894,12 @@ module REXML
             if result == position
               new_nodeset << node
             end
-          elsif result.instance_of? Array
+          elsif result.is_a?(Array)
             if result.size > 0
               new_nodeset << node
             end
           else
-            if result
+            if @functions.boolean(result)
               new_nodeset << node
             end
           end
