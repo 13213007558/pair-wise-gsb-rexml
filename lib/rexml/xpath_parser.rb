@@ -77,7 +77,11 @@ module REXML
     end
 
     def variables=(vars)
-      @variables = vars.transform_values { |v| coerce_variable(v) }
+      @variables = (vars || {}).transform_values { |v| coerce_variable(v) }
+    end
+
+    def query_context=(context)
+      @functions.extensions = context&.functions
     end
 
     def parse path, node
@@ -185,7 +189,7 @@ module REXML
       if @namespaces
         @namespaces[prefix] || ''
       elsif node.node_type == :element
-        element_namespace_lookup(node, prefix)
+        element_namespace_lookup(node, prefix) || ""
       else
         ''
       end
@@ -340,6 +344,11 @@ module REXML
           end
 
           node = nodeset.first
+          function_namespace = nil
+          if func_name.include?(":")
+            prefix, func_name = func_name.split(":", 2)
+            function_namespace = get_xpath_namespace(node, prefix)
+          end
           if context
             target_context = context
           else
@@ -350,11 +359,30 @@ module REXML
           args = arguments.dclone.collect do |arg|
             expr(arg, nodeset, target_context)
           end
-          @functions.context = target_context
+          result =
+            begin
+              previous_context = @functions.context
+              @functions.context = target_context
+              function_context = XPath::FunctionContext.new(
+                node: node,
+                position: target_context[:position],
+                size: target_context[:size]
+              )
 
-          # TODO: Maybe, this is not XPath spec behavior.
-          # This behavior must be reconsidered.
-          result = @functions.call(func_name.tr('_', '-'), args: args, fallback: [])
+              # TODO: Maybe, this is not XPath spec behavior.
+              # This behavior must be reconsidered.
+              @functions.call(
+                func_name,
+                args: args,
+                fallback: [],
+                namespace: function_namespace,
+                function_context: function_context,
+                node_indexes: @node_indexes,
+                lexical: false
+              )
+            ensure
+              @functions.context = previous_context
+            end
 
           return result if path_stack.empty?
 
@@ -428,6 +456,9 @@ module REXML
         # It's possible to optimize this by checking the actual value of the variable.
         true
       when :function
+        function_name = predicate_expr[1].to_s
+        return true if function_name.include?(":")
+        return true if @functions.extension?("", function_name)
         # functions that return number is position dependent. eg. `[position() = string-length(@attr)]`
         %w[number ceiling round floor string-length sum count].include?(predicate_expr[1])
       when :group

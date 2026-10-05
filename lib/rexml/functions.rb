@@ -1,6 +1,7 @@
 # frozen_string_literal: false
 
 require 'set'
+require_relative 'node'
 
 module REXML
   # If you add a method, keep in mind two things:
@@ -11,9 +12,12 @@ module REXML
   # Therefore, in XML, "local-name()" is identical (and actually becomes)
   # "local_name()"
   class FunctionsClass # :nodoc:
+    attr_reader :context
+
     def initialize
       @context = nil
       @node_indexes = nil
+      @extensions = {}
     end
 
     AVAILABLE_FUNCTIONS = %w[
@@ -47,6 +51,10 @@ module REXML
     ].to_set.freeze
 
     def context=(value); @context = value; end
+
+    def extensions=(value)
+      @extensions = value || {}
+    end
 
     # The evaluation's shared index cache, set by XPathParser so that sorting
     # here does not re-index the same children for every call.  It is
@@ -428,15 +436,118 @@ module REXML
       end
     end
 
-    def call(name, args:, fallback: nil)
+    def call(name, args:, fallback: nil, namespace: nil, function_context: nil,
+             node_indexes: nil, lexical: true)
       name = name.to_s
-      if AVAILABLE_FUNCTIONS.include?(name)
-        __send__(name.tr('-', '_'), *args)
-      elsif fallback.nil?
-        raise ArgumentError, "Unknown XPath function: #{name}"
+      normalized_name = name.tr('_', '-')
+      if namespace
+        extension = @extensions[[namespace, name]]
+        if extension
+          return call_extension(extension, args, function_context, node_indexes)
+        end
+        unless lexical
+          extension = @extensions[[namespace, normalized_name]]
+          if extension
+            return call_extension(extension, args, function_context, node_indexes)
+          end
+        end
+        return fallback unless fallback.nil?
+        raise ArgumentError, "Unknown XPath extension function: #{namespace}:#{name}"
+      elsif (!lexical || AVAILABLE_FUNCTIONS.include?(name)) &&
+            AVAILABLE_FUNCTIONS.include?(normalized_name)
+        __send__(normalized_name.tr('-', '_'), *args)
       else
-        fallback
+        extension = @extensions[["", name]]
+        if extension
+          return call_extension(extension, args, function_context, node_indexes)
+        end
+        extension = @extensions[["", normalized_name]]
+        if extension
+          return call_extension(extension, args, function_context, node_indexes)
+        end
+        return fallback unless fallback.nil?
+        raise ArgumentError, "Unknown XPath function: #{name}"
       end
+    end
+
+    def coerce_extension_argument(value, type)
+      case type
+      when :string
+        string(value)
+      when :number
+        number(value)
+      when :boolean
+        boolean(value)
+      when :node_set
+        normalize_node_set(value)
+      else
+        value
+      end
+    end
+
+    def coerce_extension_result(value, type, node_indexes = nil)
+      case type
+      when nil
+        case value
+        when Array
+          normalize_node_set(value, node_indexes: node_indexes)
+        when String, Numeric, true, false
+          value
+        else
+          raise invalid_extension_result(value)
+        end
+      when :node_set
+        normalize_node_set(value, node_indexes: node_indexes)
+      when :string
+        unless value.is_a?(String)
+          raise invalid_extension_result(value, "string")
+        end
+        value
+      when :number
+        unless value.is_a?(Numeric)
+          raise invalid_extension_result(value, "number")
+        end
+        value.to_f
+      when :boolean
+        unless value == true || value == false
+          raise invalid_extension_result(value, "boolean")
+        end
+      end
+    end
+
+    def normalize_node_set(value, node_indexes: @node_indexes)
+      nodes = value.is_a?(Array) ? value : [value]
+      unless nodes.all? { |node| node.is_a?(Node) }
+        raise TypeError, "XPath node-set must contain only REXML::Node objects"
+      end
+      unique_nodes = Set.new.compare_by_identity
+      nodes.each { |node| unique_nodes << node }
+      XPathParser.sort(unique_nodes.to_a, node_indexes)
+    end
+
+    def extension?(namespace, name)
+      @extensions.key?([namespace.to_s, name.to_s])
+    end
+
+    def call_extension(extension, args, context, node_indexes)
+      parameter_types = extension[:parameter_types]
+      unless args.size == parameter_types.size
+        raise ArgumentError,
+              "wrong number of arguments (#{args.size} for #{parameter_types.size})"
+      end
+      arguments = args.each_with_index.collect do |arg, index|
+        if parameter_types[index] == :node_set && !arg.is_a?(Array)
+          raise TypeError, "XPath extension argument must be a node-set: #{arg.inspect}"
+        end
+        coerce_extension_argument(arg, parameter_types[index])
+      end
+      result = extension[:block].call(context, *arguments)
+      coerce_extension_result(result, extension[:return_type], node_indexes)
+    end
+
+    def invalid_extension_result(value, type = nil)
+      expected = type ? " #{type}" : " an XPath value"
+      TypeError.new("XPath extension function must return#{expected}: #{value.inspect}")
     end
 
     # For compatibility. Use `call` instead.

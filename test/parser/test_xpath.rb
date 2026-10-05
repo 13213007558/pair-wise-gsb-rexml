@@ -66,6 +66,12 @@ module REXMLTests
                      abbreviate("string-length(a/b[last()])"))
       end
 
+      def test_namespaced_function
+        parser = REXML::Parsers::XPathParser.new
+        assert_equal([:function, "svc:value", [[:child, :qname, "", "a"]]],
+                     parser.parse("svc:value(a)"))
+      end
+
       def test_descendant_or_self_only
         assert_equal("//",
                      abbreviate("/descendant-or-self::node()/"))
