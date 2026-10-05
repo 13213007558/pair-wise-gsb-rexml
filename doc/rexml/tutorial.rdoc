@@ -1281,6 +1281,44 @@ Replace +self+ with a given node with inherited method REXML::Child#replace_with
   target.replace_with(Text.new('bah'))
   ele.children             # => [<bar/>, "baz", "bah", "bam"]
 
+=== Selecting Text Ranges
+
+Create a character range with REXML::Range. Each endpoint is a Text or CData
+node followed by a zero-based logical-character offset:
+
+  doc = Document.new('<root><a>hello <b>brave</b> world</a></root>')
+  first_text = doc.elements['//a'].get_text
+  second_text = doc.elements['//b'].get_text
+  range = REXML::Range.new(first_text, 0, second_text, 3)
+  range.text # => "hello bra"
+
+Extract the selected content into a fragment. Elements completely inside the
+range are moved, while split elements become copied ancestor shells:
+
+  fragment = range.extract
+  fragment.to_s # => "<a>hello <b>bra</b></a>"
+  doc.root.to_s # => "<root><a><b>ve</b> world</a></root>"
+
+Copied shells retain namespace declarations and other attributes needed to
+keep the fragment well-formed. Their +id+ and +xml:id+ attributes are omitted
+so the same ID cannot appear in both trees. Fully selected elements keep their
+original IDs because they are removed from the source tree.
+
+Use REXML::Range#surround on a fresh range to keep the selection in the
+source document and move it into a new or unattached empty element:
+
+  doc = Document.new('<root><a>hello <b>brave</b> world</a></root>')
+  first_text = doc.elements['//a'].get_text
+  second_text = doc.elements['//b'].get_text
+  REXML::Range.new(first_text, 0, second_text, 3).surround('mark').to_s
+  # => "<mark>hello bra</mark>"
+
+Offsets count logical characters in Text#value (entity references expanded),
+not bytes and not serialized characters. CData has no entity expansion, so
+<tt>&amp;</tt> inside CData is five literal characters. In an ordinary Text
+node, an entity or character reference is an atomic boundary: an offset may
+be immediately before or after the expanded value, but not inside it.
+
 === Cloning
 
 Create a shallow clone of an element with method REXML::Element#clone.
