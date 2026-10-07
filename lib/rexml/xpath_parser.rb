@@ -102,6 +102,36 @@ module REXML
       match( path_stack, node )
     end
 
+    # Evaluates +path+ against +node+ and returns the raw result: a
+    # node-set (an Array sorted in document order), a Numeric, a String,
+    # or a Boolean.
+    #
+    # +context+, when given, must be a Hash with +:node+, +:position+ and
+    # +:size+ entries.  It is used as the XPath evaluation context, so
+    # +position()+ and +last()+ reflect the given values.  This is mainly
+    # useful for higher level engines (such as REXML::XSLT) that iterate
+    # over a node list and need the context position and size of that
+    # list to be visible inside evaluated expressions.
+    def evaluate( path, node, context=nil )
+      path_stack = @parser.parse( path )
+      @document = node.document
+      # A fresh cache per evaluation, so that a document modified between two
+      # evaluations is not ordered by stale indexes.
+      @node_indexes = {}.compare_by_identity
+      @functions.node_indexes = @node_indexes
+      result = expr( path_stack, [node], context )
+      case result
+      when Array # nodeset
+        XPathParser.sort( result, @node_indexes )
+      else
+        result
+      end
+    ensure
+      # Let go of the indexes: they are no use to the next evaluation.
+      @node_indexes = nil
+      @functions.node_indexes = nil
+    end
+
     def []=( variable_name, value )
       @variables[variable_name] = coerce_variable(value)
     end
