@@ -1,0 +1,122 @@
+= \REXML::XSLT: a pure-Ruby subset of XSLT 1.0
+
+\REXML::XSLT evaluates a small, well-defined subset of XSLT 1.0 in a
+plain Ruby process.  It is a tree-walking template engine: source nodes
+are matched against template rules, the winning rule's body is
+interpreted as a sequence constructor, and literal result elements are
+cloned into a result tree that is serialized at the end.
+
+  require "rexml/xslt"
+
+  stylesheet = REXML::XSLT::Stylesheet.compile(xsl_source,
+                                               resources: {"common.xsl" => common_source})
+  processor = REXML::XSLT::Processor.new(stylesheet, params: {"title" => "Hi"})
+  puts processor.transform(xml_source)
+  puts processor.trace_log   # why each template rule was chosen
+
+== Supported subset
+
+* <tt>xsl:stylesheet</tt> / <tt>xsl:transform</tt> (+version+ required)
+* <tt>xsl:import</tt> (see "Offline resource table" below)
+* <tt>xsl:template</tt> with +match+, +name+, +mode+, +priority+
+* <tt>xsl:apply-templates</tt> with +select+, +mode+, <tt>xsl:with-param</tt>
+* <tt>xsl:call-template</tt> with +name+, <tt>xsl:with-param</tt>
+* <tt>xsl:param</tt> (top level and inside templates; +select+ defaults only)
+* <tt>xsl:value-of</tt>, <tt>xsl:text</tt>
+* Literal result elements (attributes are copied verbatim; attribute
+  value templates are not evaluated)
+* The XSLT 1.0 built-in template rules
+
+Match patterns support <tt>*</tt>, <tt>ns:*</tt>, QNames, <tt>@name</tt>,
+<tt>@*</tt>, <tt>node()</tt>, <tt>text()</tt>, <tt>comment()</tt>,
+<tt>processing-instruction()</tt>, <tt>/</tt>, child and descendant
+steps (<tt>a/b</tt>, <tt>a//b</tt>) and unions (<tt>a | b</tt>).
+Predicates and other axes raise \REXML::XSLT::PatternError.
+
+Anything else in the XSLT namespace -- <tt>xsl:for-each</tt>,
+<tt>xsl:if</tt>, <tt>xsl:variable</tt>, <tt>xsl:sort</tt>,
+<tt>xsl:copy-of</tt>, ... -- raises
+\REXML::XSLT::UnsupportedInstructionError at compile time, i.e. *before
+a single source node is processed*.  A stylesheet either runs
+completely within the subset or not at all.
+
+== Offline resource table
+
+Stylesheets are compiled from strings.  <tt>xsl:import</tt> hrefs are
+resolved exclusively against the +resources+ hash passed to
+\Stylesheet.compile; nothing is ever read from the filesystem or the
+network.  A href that is not present in the table raises
+\REXML::XSLT::UnknownResourceError, and import cycles raise
+\REXML::XSLT::CircularImportError.
+
+== How a template rule is chosen
+
+When several template rules match a node, XSLT 1.0 (section 5.5) picks
+the winner in three steps:
+
+1. <b>Import precedence.</b>  A stylesheet module outranks every module
+   it imports, and a module imported later outranks one imported
+   earlier.  The main stylesheet therefore always has the highest
+   import precedence.  Precedence is compared *before* priority: a
+   main-stylesheet rule with default priority still beats an imported
+   rule with <tt>priority="99"</tt>.
+
+2. <b>Priority.</b>  An explicit <tt>xsl:template/@priority</tt> wins.
+   Otherwise the default priority is derived from the pattern:
+
+   * <tt>node()</tt>, <tt>text()</tt>, <tt>comment()</tt>,
+     <tt>processing-instruction()</tt>  => -0.5
+   * <tt>*</tt>, <tt>ns:*</tt>, <tt>@*</tt>  => -0.5
+   * a specific QName such as <tt>item</tt> or <tt>@id</tt>,
+     <tt>processing-instruction('lit')</tt>  => 0
+   * anything else, e.g. <tt>list/item</tt>, <tt>a//b</tt>, <tt>/</tt>  => 0.5
+
+   Union patterns (<tt>a | list/b</tt>) are treated as one rule per
+   alternative, each with its own default priority.
+
+3. <b>Document order.</b>  If rules still tie on precedence and
+   priority, the template that appears *last* in the stylesheet wins
+   (the recovery behaviour the spec allows).
+
+If no rule matches, the built-in template rules apply (see below).
+
+Every selection is recorded in <tt>processor.trace_log</tt> with all
+candidates, their precedence/priority/document-order, and the reason
+the winner won, for example:
+
+  template selection for element <item> (mode: #default): 2 candidate rule(s)
+    candidate xsl:template[match="item"] (#2 in (stylesheet)) precedence=2 priority=0
+    candidate xsl:template[match="item"] (#1 in base.xsl) precedence=1 priority=99
+    => selected xsl:template[match="item"] (#2 in (stylesheet)): highest import precedence (2)
+
+== Built-in template rules
+
+When no template rule matches a node in the current mode, the XSLT 1.0
+section 5.8 built-in rules apply, exactly as if the stylesheet
+contained:
+
+  <xsl:template match="*|/"><xsl:apply-templates/></xsl:template>
+  <xsl:template match="text()|@*"><xsl:value-of select="."/></xsl:template>
+  <xsl:template match="processing-instruction()|comment()"/>
+
+That is: the root node and elements recurse into their children *in the
+same mode*, text nodes and attribute values are copied to the result
+tree, and comments and processing instructions are discarded.  Built-in
+selections are explained in the trace log too.
+
+== Modes
+
+<tt>xsl:apply-templates</tt> without a +mode+ attribute stays in the
+current mode; a +mode+ attribute switches.  Template rules only fire
+for their own mode, and the built-in rules exist independently in every
+mode, so a mode-specific rule can rely on built-in recursion to reach
+the nodes it cares about.
+
+== Parameters
+
+Top-level <tt>xsl:param</tt> defaults may be overridden through
+<tt>Processor.new(stylesheet, params: {...})</tt>.  Template-level
+<tt>xsl:param</tt> values are supplied by <tt>xsl:with-param</tt> on
+<tt>xsl:apply-templates</tt> or <tt>xsl:call-template</tt>; otherwise
+the param's +select+ default (or the empty string) is used.  Parameters
+are visible to XPath expressions as <tt>$name</tt>.
