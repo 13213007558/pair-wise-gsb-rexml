@@ -89,6 +89,13 @@ module REXML
     #   d = REXML::Document.new(xml_string, context)
     #   d.context # => {:raw=>:all, :compress_whitespace=>:all}
     #
+    # The context may also contain an optional +:entity_resolver+ entry:
+    # an object that responds to <tt>resolve(system_id, public_id)</tt>
+    # and returns the replacement content (String or IO) for the
+    # document's external DTD subset, or +nil+ to leave it unresolved.
+    # When no resolver is given (the default), external resources are
+    # never read.  See REXML::XMLCatalog for a catalog-based resolver.
+    #
     def initialize( source = nil, context = {} )
       @entity_expansion_count = 0
       @entity_expansion_limit = Security.entity_expansion_limit

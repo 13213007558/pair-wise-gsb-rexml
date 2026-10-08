@@ -8,6 +8,9 @@ module REXML
       def initialize( source, build_context = Document.new )
         @build_context = build_context
         @parser = Parsers::BaseParser.new( source )
+        if build_context.respond_to?(:context) and build_context.context.is_a?(Hash)
+          @parser.entity_resolver = build_context.context[:entity_resolver]
+        end
       end
 
       def add_listener( listener )

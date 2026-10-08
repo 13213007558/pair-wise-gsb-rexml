@@ -173,6 +173,8 @@ module REXML
         @entity_expansion_count = 0
         @entity_expansion_limit = Security.entity_expansion_limit
         @entity_expansion_text_limit = Security.entity_expansion_text_limit
+        @entity_resolver = nil
+        @parsing_external_subset = false
         @source.ensure_buffer
         @version = nil
       end
@@ -186,6 +188,16 @@ module REXML
       attr_writer :entity_expansion_limit
       attr_writer :entity_expansion_text_limit
 
+      # The optional external entity resolver.  When set, it must respond
+      # to +resolve(system_id, public_id)+ and return the replacement
+      # content (String or IO) for the external DTD subset, or nil when
+      # the reference must not be resolved.  When no resolver is set (the
+      # default), external resources are never read.
+      attr_accessor :entity_resolver
+
+      # Whether this parser is parsing an external DTD subset. :nodoc:
+      attr_writer :parsing_external_subset
+
       def stream=( source )
         @source = SourceFactory.create_from( source )
         reset
@@ -195,6 +207,8 @@ module REXML
         @closed = nil
         @have_root = false
         @document_status = nil
+        @doctype_public_id = nil
+        @doctype_system_id = nil
         @tags = []
         @stack = []
         @entities = []
@@ -313,6 +327,8 @@ module REXML
               else
                 id = parse_id(base_error_message,
                               accept_public_id: false)
+                @doctype_public_id = id[1]
+                @doctype_system_id = id[2]
                 if id[0] == "SYSTEM"
                   # For backward compatibility
                   id[1], id[2] = id[2], nil
@@ -331,6 +347,7 @@ module REXML
               args = [:start_doctype, name, *id]
               if @document_status == :after_doctype
                 @source.skip_spaces
+                @stack.concat(external_subset_events)
                 @stack << [ :end_doctype ]
               end
               return args
@@ -371,7 +388,7 @@ module REXML
                 match[4] = match[4][1..-2] # HREF
                 match.delete_at(5) if match.size > 5 # Chop out NDATA decl
                 # match is [ :entity, name, PUBLIC, pubid, href(, ndata)? ]
-              elsif Private::PEREFERENCE_PATTERN.match?(match[2])
+              elsif !@parsing_external_subset and Private::PEREFERENCE_PATTERN.match?(match[2])
                 raise REXML::ParseException.new("Parameter entity references forbidden in internal subset: #{match[2]}", @source)
               else
                 match[2] = match[2][1..-2]
@@ -429,7 +446,9 @@ module REXML
             return [ :externalentity, match[1] ]
           elsif @source.match?(/\]\s*>/um, true)
             @document_status = :after_doctype
-            return [ :end_doctype ]
+            @stack.concat(external_subset_events)
+            @stack << [ :end_doctype ]
+            return @stack.shift
           else
             raise ParseException.new("Malformed DOCTYPE: invalid declaration", @source)
           end
@@ -619,6 +638,47 @@ module REXML
       end
 
       private
+      # Asks the configured entity resolver for the content of the
+      # external DTD subset and parses its events.  Returns an empty
+      # array when no resolver is configured, when the doctype has no
+      # system identifier, or when the resolver declines to resolve the
+      # reference (the default behavior: external resources are ignored).
+      def external_subset_events
+        return [] unless @entity_resolver
+        return [] unless @doctype_system_id
+        content = @entity_resolver.resolve(@doctype_system_id, @doctype_public_id)
+        return [] if content.nil?
+        content = content.read if content.respond_to?(:read)
+        parse_external_subset(content.to_s)
+      end
+
+      def parse_external_subset(content)
+        # Strip an optional BOM and text declaration (<?xml ... ?>),
+        # which may begin an external subset but not an internal one.
+        content = content.sub(/\A\uFEFF/, "")
+        content = content.sub(/\A<\?xml\s[^?]*\?>/, "")
+        root_name = "rexml-external-subset"
+        wrapped = "<!DOCTYPE #{root_name} [\n#{content}\n]><#{root_name}/>"
+        parser = self.class.new(wrapped)
+        parser.parsing_external_subset = true
+        events = []
+        while parser.has_next?
+          event = parser.pull
+          case event[0]
+          when :end_doctype
+            break
+          when :start_doctype, :end_document
+            # Wrapper events, not part of the subset.
+          else
+            events << event
+          end
+        end
+        events
+      rescue REXML::ParseException => error
+        raise REXML::ParseException.new("Failed to parse external DTD subset: #{error.message}",
+                                        @source)
+      end
+
       def add_namespace(prefix, uri)
         @namespaces_restore_stack.last[prefix] = @namespaces[prefix]
         if uri.nil?
