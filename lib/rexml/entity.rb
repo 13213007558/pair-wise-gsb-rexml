@@ -96,6 +96,20 @@ module REXML
       @value
     end
 
+    # Resolves this entity's external identifier through the given
+    # resource +resolver+, for example a REXML::XMLCatalog::Resolver,
+    # and returns the resolver's plan (such as a
+    # REXML::XMLCatalog::Resolution), or nil when this is not an
+    # external entity or the resolver provides no mapping.
+    #
+    # Only the identifier mapping is performed; REXML never reads the
+    # resolved resource.  Whether the mapped resource may be opened
+    # remains subject to the caller's own policy.
+    def resolve_external_id(resolver)
+      return nil if @external.nil?
+      resolver.resolve(system_id: @ref, public_id: @pubid)
+    end
+
     # Write out a fully formed, correct entity definition (assuming the Entity
     # object itself is valid.)
     #

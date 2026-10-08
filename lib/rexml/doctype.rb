@@ -230,6 +230,20 @@ module REXML
         notation_decl.name == name
       }
     end
+
+    # Resolves this doctype's external identifier through the given
+    # resource +resolver+, for example a REXML::XMLCatalog::Resolver,
+    # and returns the resolver's plan (such as a
+    # REXML::XMLCatalog::Resolution), or nil when there is no external
+    # identifier or the resolver provides no mapping.
+    #
+    # Only the identifier mapping is performed; REXML never reads the
+    # resolved resource.  Whether the mapped resource may be opened
+    # remains subject to the caller's own policy.
+    def resolve_external_id(resolver)
+      return nil if @external_id.nil?
+      resolver.resolve(system_id: system, public_id: public)
+    end
   end
 
   # We don't really handle any of these since we're not a validating

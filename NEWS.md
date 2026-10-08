@@ -1,5 +1,25 @@
 # News
 
+## Unreleased
+
+### Improvement
+
+  * Add `REXML::XMLCatalog`, an OASIS XML Catalogs 1.1 resolver that
+    maps system identifiers, public identifiers and URI references to
+    replacement URIs (for example local mirrors of DTDs and entity
+    files).  It supports exact `system`/`public`/`uri` mappings,
+    `rewriteSystem`/`rewriteURI`, `systemSuffix`/`uriSuffix`,
+    `delegatePublic`/`delegateSystem`/`delegateURI` and
+    `nextCatalog`, honors `prefer` and `xml:base`, and reports
+    delegation loops with the catalog chain.  The resolver only returns
+    a resolution plan; reading the mapped resource and loading
+    delegated catalogs happen only through caller-supplied callbacks,
+    so a catalog can never widen file or network access on its own.
+  * Add `REXML::DocType#resolve_external_id` and
+    `REXML::Entity#resolve_external_id` as the optional resource
+    resolution interface.  The default external resource policy is
+    unchanged.
+
 ## 3.4.4 - 2025-09-10 {#version-3-4-4}
 
 ### Improvement
